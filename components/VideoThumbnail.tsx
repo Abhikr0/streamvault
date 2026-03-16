@@ -8,8 +8,16 @@ interface VideoThumbnailProps {
   /** Thumbnail already stored in DB — skip generation entirely if provided */
   cachedThumbnail?: string
   /** Seek time in seconds for frame capture (default: 5) */
+  duration?: number
   seekTo?: number
   className?: string
+}
+
+function fmt(s: number) {
+  if (!s || isNaN(s)) return ''
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60)
+  if (h) return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+  return `${m}:${String(sec).padStart(2,'0')}`
 }
 
 type ThumbState = 'ready' | 'generating' | 'error'
@@ -21,6 +29,7 @@ export default function VideoThumbnail({
   videoId,
   title,
   cachedThumbnail,
+  duration,
   seekTo = 5,
   className = '',
 }: VideoThumbnailProps) {
@@ -29,6 +38,7 @@ export default function VideoThumbnail({
 
   const [dataUrl, setDataUrl] = useState<string>(initial ?? '')
   const [state, setState] = useState<ThumbState>(initial ? 'ready' : 'generating')
+  const [videoDuration, setVideoDuration] = useState<number>(duration ?? 0)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const attemptedRef = useRef(false)
@@ -38,11 +48,15 @@ export default function VideoThumbnail({
     if (attemptedRef.current) return
     attemptedRef.current = true
 
-    // Already have it — nothing to do
+    // Already have thumbnail in memory?
     if (memCache.has(videoId)) {
       setDataUrl(memCache.get(videoId)!)
-      setState('ready')
-      return
+      // If we also already have duration, we are truly done
+      if (videoDuration > 0) {
+        setState('ready')
+        return
+      }
+      // Otherwise, we continue to load the video just to get the duration
     }
 
     const video = document.createElement('video')
@@ -73,28 +87,29 @@ export default function VideoThumbnail({
       clearTimeout(timeout)
 
       try {
-        const canvas = document.createElement('canvas')
-        canvas.width = 480
-        canvas.height = 270
-        const ctx = canvas.getContext('2d')!
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-        const url = canvas.toDataURL('image/jpeg', 0.75)
+        let url = memCache.get(videoId)
+        
+        if (!url) {
+          const canvas = document.createElement('canvas')
+          canvas.width = 480
+          canvas.height = 270
+          const ctx = canvas.getContext('2d')!
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+          url = canvas.toDataURL('image/jpeg', 0.75)
+          if (url.length < 500) throw new Error('blank frame')
+          memCache.set(videoId, url)
+          setDataUrl(url)
+        }
 
-        if (url.length < 500) throw new Error('blank frame')
-
-        // Update UI immediately
-        memCache.set(videoId, url)
-        setDataUrl(url)
+        setVideoDuration(video.duration)
         setState('ready')
 
-        // Persist to DB in the background — fire and forget
+        // Persist to DB
         fetch(`/api/videos/${videoId}/thumbnail`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ thumbnail: url }),
-        }).catch(() => {
-          console.warn(`[thumbnail] Failed to save thumbnail for ${videoId}`)
-        })
+          body: JSON.stringify({ thumbnail: url, duration: video.duration }),
+        }).catch(() => {})
       } catch {
         setState('error')
       } finally {
@@ -122,7 +137,8 @@ export default function VideoThumbnail({
 
   // ── IntersectionObserver — only generate when card enters viewport ────────
   useEffect(() => {
-    if (state === 'ready') return
+    // Generate if either thumbnail OR duration is missing
+    if (state === 'ready' && videoDuration > 0) return
 
     const el = containerRef.current
     if (!el) return
@@ -138,18 +154,25 @@ export default function VideoThumbnail({
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [captureAndSave, state])
+  }, [captureAndSave, state, videoDuration])
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div ref={containerRef} className={`w-full h-full ${className}`}>
       {state === 'ready' && dataUrl ? (
-        <img
-          src={dataUrl}
-          alt={`Thumbnail – ${title}`}
-          className="w-full h-full object-cover"
-          loading="lazy"
-        />
+        <>
+          <img
+            src={dataUrl}
+            alt={`Thumbnail – ${title}`}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
+          {videoDuration > 0 && (
+            <span className="absolute bottom-1 right-1 bg-black/70 text-white text-[10px] px-1 py-0.5 rounded font-mono font-medium z-10">
+              {fmt(videoDuration)}
+            </span>
+          )}
+        </>
       ) : (
         <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#0f1825] to-[#0a1020]">
           <div

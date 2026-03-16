@@ -12,6 +12,7 @@ export interface IVideo extends Document {
   category: string
   directory: string
   thumbnail?: string    // base64 JPEG data-URL, generated client-side on first view
+  duration?: number     // seconds
   likes: number
   dislikes: number
   favoritedBy: string[]
@@ -34,6 +35,7 @@ const VideoSchema = new Schema<IVideo>(
     category:     { type: String, default: 'General' },
     directory:    { type: String, default: '' },
     thumbnail:    { type: String, default: '' },  // base64 JPEG data-URL
+    duration:     { type: Number, default: 0 },
     likes:        { type: Number, default: 0 },
     dislikes:     { type: Number, default: 0 },
     favoritedBy:  { type: [String], default: [] },
